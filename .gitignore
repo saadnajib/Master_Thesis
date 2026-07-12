@@ -1,0 +1,27 @@
+# Model files
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.h5
+
+# Data
+*.zip
+*.tar.gz
+data/
+datasets/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
