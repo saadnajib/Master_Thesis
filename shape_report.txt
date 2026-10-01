@@ -1,0 +1,30 @@
+Anny shape inspection report
+generated: 2026-07-03T05:59:56.862446
+============================================================
+
+Loading AnnyOne Dataset...
+dataset size: 579960
+
+================= PART 1: RAW SAMPLE =================
+annot keys: ['imagename', 'K', 'humans']
+n humans in sample 0: 4
+human[0] keys: ['name', 'anny_pose', 'anny_shape', 'tight_bbox', 'segm_color']
+  name: str = HG_Philip
+  anny_pose: shape=(163, 4, 4), dtype=float32
+  anny_shape: shape=(11,), dtype=float32
+  tight_bbox: list of length 4
+  segm_color: int = 42
+
+>>> FOUND 'anny_shape': len=11, min=0.2001, max=0.8945
+>>> values: [0.8945, 0.8292, 0.6861, 0.3956, 0.4034, 0.725, 0.8084, 0.7003, 0.4717, 0.2001, 0.6394]
+
+================= PART 2: AFTER COLLATE (authoritative) =================
+batched keys: ['imagename', 'K', 'n_humans', 'valid_humans', 'anny_pose', 'anny_shape']
+anny_shape: shape=(1, 4, 11), dtype=torch.float32, min=0.0184, max=0.9957
+first human values: [0.8945, 0.8292, 0.6861, 0.3956, 0.4034, 0.725, 0.8084, 0.7003, 0.4717, 0.2001, 0.6394]
+
+================= PART 3: ANNY PHENOTYPE LABELS =================
+phenotype_labels: ['gender', 'age', 'muscle', 'weight', 'height', 'proportions', 'cupsize', 'firmness', 'african', 'asian', 'caucasian']
+n_labels: 11
+indices used by the model: {'age': 1, 'gender': 0, 'weight': 3, 'height': 4, 'muscle': 2, 'proportions': 5}
+used keys NOT in labels: []

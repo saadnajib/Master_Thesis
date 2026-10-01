@@ -1,0 +1,17 @@
+cp /netscratch/najib/multi-hmr/logs/anny_model/anny_distill_vits_v2/checkpoints/00199.pt    /netscratch/najib/multi-hmr/models/multiHMR/anny_distill_vits_v2_00199.pt
+
+cp /netscratch/najib/multi-hmr/logs/anny_model/anny_s2_frozen_bb_v2/checkpoints/00299.pt    /netscratch/najib/multi-hmr/models/multiHMR/anny_s2_frozen_bb_v2_00299.pt
+
+
+cp  /netscratch/najib/multi-hmr/models/multiHMR/anny_00002_v1.pt /netscratch/najib/multi-hmr/logs/anny_model/anny_full_run_v1/checkpoints/00002.pt
+
+
+
+training :
+
+
+# baseline (identical to current behavior)
+python train.py --train_data AnnyOne --name anny_localbone --pose_param local-bone ...
+
+# world-orient
+python train.py --train_data AnnyOne --name anny_worldorient --pose_param world-orient ...

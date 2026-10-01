@@ -1,27 +1,23 @@
-# Model files
-*.pth
-*.pt
-*.ckpt
-*.pkl
-*.h5
-
-# Data
-*.zip
-*.tar.gz
-data/
-datasets/
-
-# Python
 __pycache__/
 *.pyc
-*.egg-info/
-.venv/
-venv/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-
-# OS
-.DS_Store
+logs/
+data/
+datasets/
+models/
+demo_out*/
+demo_*/
+*_demo_images*/
+anny_fit_check*/
+threedpw_anny*/
+example_data*/
+*.npz
+*.npy
+*.pkl
+*.glb
+*.pt
+*.pt.*
+*.pth
+*.ckpt
+*.bak*
+* - Copy*
+*copy*
