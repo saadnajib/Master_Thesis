@@ -47,9 +47,9 @@ find /netscratch/najib/torch_cache/hub/facebookresearch_dinov2_main/dinov2 -name
 # 4. Run Training
 #
 # KEY CHANGES FROM PREVIOUS RUN:
-#   --pretrained        : resume from best checkpoint of previous run (epoch 19,
-#                         lowest PA-PVE=113.9). Change to a later epoch if the
-#                         job ran longer before you submit this.
+#   --pretrained        : resume from epoch 299 (00299.pt) of anny_full_run_v2.
+#                         (An earlier version of this comment pointed at epoch
+#                         19, the lowest PA-PVE=113.9; the flag now loads 299.)
 #   --name              : new run name so logs/checkpoints don't overwrite the old run
 #   --n_iters_per_epoch : FIXED - caps each epoch at 1000 iters so checkpoints
 #                         and evals happen every ~15 min, not every 29 hours

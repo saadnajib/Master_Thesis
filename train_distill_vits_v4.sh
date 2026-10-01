@@ -66,13 +66,6 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 python -c "import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14', pretrained=False)" || true
 find /netscratch/najib/torch_cache/hub/facebookresearch_dinov2_main/dinov2 -name "*.py" -exec sed -i 's/ | None//g' {} +
 
-# Refuse to run on an unpatched train.py - the flags would be silently ignored
-# by argparse and the run would be a repeat of v2.
-if ! grep -q "init_heads_from_teacher" train.py; then
-  echo "ERROR: train.py is not patched. Run:  python apply_student_fix.py train.py"
-  exit 1
-fi
-
 TEACHER="/netscratch/najib/multi-hmr/logs/anny_model/anny_s2_shape_v5/checkpoints/00099.pt"
 [ -f "$TEACHER" ] || { echo "ERROR: teacher not found: $TEACHER"; exit 1; }
 echo "Teacher (frozen): $TEACHER"
@@ -91,9 +84,9 @@ if [ ! -f "$STUDENT_BB" ]; then
 fi
 echo "Student backbone init: $STUDENT_BB"
 
-# --learning_rate 5e-5 : heads are already trained (from the teacher), the
-#     backbone is not; a middle value between the 1e-4 cold start and the
-#     2e-5 fine-tune. --lr_decay_every 60 over 150 epochs -> 2 halvings.
+# --learning_rate 7e-5 : heads are already trained (from the teacher), the
+#     backbone is not; v3's 5e-5 scaled up for batch 8 (see header).
+#     --lr_decay_every 60 over 150 epochs -> 2 halvings.
 # --start_2d_epoch 0 : heads already produce sensible geometry from step 0.
 python train.py \
     --train_data AnnyOne \

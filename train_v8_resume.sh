@@ -1,6 +1,8 @@
 #!/bin/bash
 # =============================================================================
-# v6: CONTINUE from v5 for 300 more epochs
+# v8 RESUME: CONTINUE anny_partial_freeze (train_v8_partial_freeze.sh) for 300
+# more epochs. NOTE: the background notes below were written for the earlier
+# v6 continuation of v5 and are kept for history; the flags are v8's.
 # =============================================================================
 # v5 fixed the shape head. Measured in-domain against AnnyOne ground truth:
 #
@@ -70,10 +72,11 @@ echo "Patching DINOv2 cache to remove Python 3.10+ type hints..."
 find /netscratch/najib/torch_cache/hub/facebookresearch_dinov2_main/dinov2 -name "*.py" -exec sed -i 's/ | None//g' {} +
 
 # Fail fast if the continuation checkpoint is missing.
-# >>> continuing from v5 (the run that fixed the shape head).
+# >>> continuing from v8 (anny_partial_freeze, train_v8_partial_freeze.sh).
 #     Check the actual latest epoch before submitting:
 #     ls -lt /netscratch/najib/multi-hmr/logs/anny_model/anny_partial_freeze/checkpoints/ | head -3
-#     and edit V5_EPOCH below to match.
+#     and edit V5_EPOCH below to match (variable name is historical; it holds
+#     the v8 epoch).
 V5_EPOCH=00299   # <-- SET to the highest epoch in anny_partial_freeze/checkpoints/
 CKPT=$(printf "/netscratch/najib/multi-hmr/logs/anny_model/anny_partial_freeze/checkpoints/%s.pt" "$V5_EPOCH")
 if [ ! -f "$CKPT" ]; then
@@ -84,12 +87,13 @@ fi
 echo "Continuing from $CKPT"
 
 # 4. Run Training
-#   Continuing from v5 (own checkpoint, same Model class) - remap/backbone-only
+#   Continuing from v8 partial-freeze (own checkpoint, same Model class) - remap/backbone-only
 #       stay OFF, same reasoning as the v3 launch: our own key names already
 #       match, and we want the trained heads back, not just the backbone.
-#   --unfreeze_last_n_blocks 4 / --mask_helper_joints_train 1 : unchanged from v5.
-#   --boost_neck_weight 4 / --boost_hand_weight 4 : carried over from v4/v5.
-#   --learning_rate 1e-5 : unchanged from v5 (still touching backbone blocks
+#   --unfreeze_last_n_blocks 4 / --mask_helper_joints_train 1 : unchanged from v8.
+#   --boost_neck_weight 4 / --boost_hand_weight 4 : ADDED here (the v8
+#       partial-freeze run did not pass them; same values as v4/v5).
+#   --learning_rate 1e-5 : unchanged from v8 (still touching backbone blocks
 #       of an already-trained model).
 #   --name : NEW name -> fresh checkpoint dir.
 

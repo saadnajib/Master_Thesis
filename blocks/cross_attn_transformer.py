@@ -248,9 +248,10 @@ class TransformerCrossAttn(nn.Module):
             if mask is not None:
                 try:
                     x = x * mask[:, :, None]
-                except:
-                    print("see ")
-                    import pdb; pdb.set_trace()
+                except RuntimeError as e:
+                    raise RuntimeError(
+                        f"mask shape {tuple(mask.shape)} incompatible with x shape {tuple(x.shape)}"
+                    ) from e
             x = self_attn(x, mask=mask, *args) + x
             x = cross_attn(x, mask=mask, *args, context=context_list[i]) + x
             x = ff(x, *args) + x

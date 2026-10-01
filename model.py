@@ -29,17 +29,6 @@ import numpy as np
 import einops
 from utils.constants import MEAN_PARAMS
 
-# Mapping from 163 Anny joints -> 55 SMPL-X joints
-# Used to run the existing SMPL-X layer for mesh generation
-# ANNY_TO_SMPLX_MAPPING = [
-#     0, 2, 22, 47, 4, 24, 44, 6, 26, 43, 7, 27, 100, 48, 74, 103,
-#     50, 76, 52, 78, 54, 80, 104, 143, 148, 59, 60, 61, 63, 64, 65,
-#     71, 72, 73, 67, 68, 69, 55, 56, 57, 85, 86, 87, 89, 90, 91,
-#     97, 98, 99, 93, 94, 95, 81, 82, 83
-# ]
-
-# smpl_layer joint order: root, body(21), lhand(15), rhand(15), jaw — no leye/reye
-# SMPLX_TO_SMPL_LAYER_INDICES = list(range(23)) + list(range(25, 55))  # 53 joints
 
 class Model(nn.Module):
     """A ViT backbone followed by a "HPH" head (stack of cross attention layers with queries corresponding to detected humans.)"""
@@ -75,7 +64,7 @@ class Model(nn.Module):
         self.backbone = Dinov2Backbone(backbone, pretrained=pretrained_backbone)
         self.embed_dim = self.backbone.embed_dim
         self.patch_size = self.backbone.patch_size
-        # --- projector-fed heads (see apply_student_fix_v3.py) ---------------
+        # --- projector-fed heads (archive/patches/apply_student_fix_v3.py; already applied here) ---
         # With head_dim set (student distillation), a linear layer maps the
         # backbone tokens to head_dim and EVERY head is built at that width, so
         # a teacher of that width transfers its heads completely. None/0 keeps
