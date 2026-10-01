@@ -1,3 +1,5 @@
+> **Thesis readers:** this README is the upstream Multi-HMR documentation. The thesis contributions, experiment chain and results protocol are in [THESIS.md](THESIS.md).
+
 
 <p align="center">
   <h1 align="center">Multi-HMR: Multi-Person Whole-Body Human Mesh Recovery in a Single Shot</h1>
