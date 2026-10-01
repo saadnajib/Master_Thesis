@@ -1,30 +1,5 @@
 
 <p align="center">
-  <h1 align="center">Multi-HMR: Multi-Person Whole-Body Human Mesh Recovery in a Single Shot</h1>
-
-  <p align="center">
-    <a href="https://fabienbaradel.github.io/">Fabien Baradel*</a>, 
-    <a href="https://europe.naverlabs.com/people_user_naverlabs/matthieu-armando/">Matthieu Armando</a>,  
-    <a href="https://salmag98.github.io/">Salma Galaaoui</a>,  
-    <a href="https://europe.naverlabs.com/people_user_naverlabs/Romain-Br%C3%A9gier/">Romain Brégier</a>,  <br>
-    <a href="[./](https://europe.naverlabs.com/people_user_naverlabs/Philippe-Weinzaepfel/?asp_highlight=Philippe+Weinzaepfel&p_asid=9)">Philippe Weinzaepfel</a>, 
-    <a href="https://europe.naverlabs.com/people_user_naverlabs/Gregory-Rogez/">Grégory Rogez</a>, 
-    <a href="https://europe.naverlabs.com/people_user_naverlabs/Thomas-Lucas/">Thomas Lucas*</a> 
-  </p>
-
-  <p align="center">
-    <b>ECCV'24</b>
-  </p>
-
-  <p align="center">
-    <sup>*</sup> equal contribution
-  </p>
-
-  <p align="center">
-  <a href="https://arxiv.org/abs/2402.14654"><img alt="arXiv" src="https://img.shields.io/badge/arXiv-2402.14654-00ff00.svg"></a>
-  <a href="https://europe.naverlabs.com/?p=9361171&preview=true"><img alt="Blogpost" src="https://img.shields.io/badge/Blogpost-up-yellow"></a>
-  <a href="https://huggingface.co/spaces/naver/multi-hmr"><img src='https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Space-blue'></a>
-  </p>
 
   <div align="center">
   <img width="49%" alt="Multi-HMR illustration 1" src="assets/visu1.gif">
@@ -37,217 +12,184 @@
 </div>
 </p>
 
-## News
-- 2026/02/17: Release of checkpoint with [Anny](https://github.com/naver/anny) body model.
-- 2024/07/03: Release of training-evaluation code.
-- 2024/07/01: Multi-HMR is accepted to ECCV'24.
-- 2024/06/17: Multi-HMR won [Robin Challenge @CVPR'24](https://rhobin-challenge.github.io/): 3D human reconstruction track.
-- 2024/02/22: Release of demo code.
+# Multi-HMR with the Anny body model
 
-## Installation
-First, you need to clone the repo.
+Master's thesis code: extending [Multi-HMR](https://github.com/naver/multi-hmr) (single-shot multi-person human mesh recovery) to predict the [Anny](https://github.com/naver/anny) body model instead of SMPL-X, compressing it by knowledge distillation, and converting real-world 3DPW ground truth into Anny's parameter space so the model can be trained and evaluated on real photos.
 
-We recommand to use virtual enviroment for running MultiHMR.
-Please run the following lines for creating the environment with ```venv```:
-```bash
-python3.9 -m venv .multihmr
-source .multihmr/bin/activate
-pip install -r requirements.txt
+RPTU Kaiserslautern-Landau / DFKI. Supervisor: Muhammad Saif Ullah Khan. All training runs on DFKI's Pegasus cluster (Slurm + Enroot containers); the `*.sh` files are the exact job scripts used.
+
+Based on Multi-HMR by NAVER (ECCV 2024, non-commercial licence, see `LICENSE.txt` / `NOTICE.txt`). Everything in this repository that is not in the original Multi-HMR release was written for the thesis.
+
+---
+
+## What the model does
+
+Input: one RGB image. Output: for every detected person, 163 Anny bone rotations (6D), 11 Anny phenotypes (gender, age, muscle, weight, height, proportions, cup size, firmness, african/asian/caucasian), 2D location and depth. A DINOv2 ViT backbone produces patch tokens; a detection MLP finds people; a cross-attention head ("HPH") regresses the body parameters per person.
+
+Two model classes exist and are **not** interchangeable:
+
+| class | file | checkpoint key prefix | used by |
+|---|---|---|---|
+| `Model` | `model.py` | `backbone.encoder.*` | `train.py`, our checkpoints |
+| `Multi_HMR` | `multi_hmr_anny/multi_hmr.py` | `encoder.backbone.*` | Naver's released checkpoints |
+
+Loading one into the other with `strict=False` silently loads nothing. `train.py --pretrained_remap 1` renames the backbone keys; `inspect_ckpt.py --compare` tells you which class a checkpoint fits.
+
+---
+
+## Repository layout
+
+```
+model.py, loss.py, train.py          training code (Model class, losses, trainer)
+distill.py                           knowledge-distillation loss + frozen teacher loader
+apply_student_fix*.py                patches that added the distillation flags to train.py / model.py
+demo.py                              inference + rendering, with the inference-time toggles below
+smpl_to_anny.py                      3DPW SMPL -> Anny ground-truth conversion (Track B)
+render_anny_fit.py                   overlays a converted body on the 3DPW frame for visual checks
+check_anny_fit.py, npz_to_annyone.py sanity checker / converter to Anny-One label format
+*_export.py, sample_images.py        pull images + per-image FOV out of AnnyOne / 3DPW for demos
+check_*.py, compare_*.py, phenotype_stats.py, inspect_*.py   diagnostics (see "Diagnostics")
+train_*.sh, run_*.sh                 Slurm job scripts, one per experiment, in run order
+conda.yaml, requirements.txt         environment
 ```
 
-Otherwise you can also create a conda environment.
+---
+
+## Setup
+
+### Environment
+
 ```bash
-conda env create -f conda.yaml
+conda env create -f conda.yaml      # python 3.9, torch 2.0.1, roma, smplx, pyrender, anny
 conda activate multihmr
 ```
 
-The installation has been tested with python3.9 and CUDA 12.1.
+DINOv2 is fetched through `torch.hub`; on Python 3.9 its type hints must be patched (every job script does `sed -i 's/ | None//g'` on the cached copy). Rendering needs EGL; the demo scripts install the NVIDIA EGL vendor file inside the container.
 
-Checkpoints will automatically be downloaded to `$HOME/models/multiHMR` the first time you run the demo code.
+### Data and weights (not in this repo, all licensed)
 
-## Run Multi-HMR on images
-The following command will run Multi-HMR on all images in the specified `--img_folder`, and save renderings of the reconstructions in `--out_folder`.
-The `--model_name` flag specifies the model to use.
-The `--extra_views` flags additionally renders the side and bev view of the reconstructed scene, `--save_mesh` saves meshes as in a '.npy' file.
+| what | where it is expected | source |
+|---|---|---|
+| Anny-One dataset (~580k synthetic images) | `/netscratch/<user>/anydataset/` | Naver, with Anny |
+| 3DPW (images + sequenceFiles) | `/ds-av/public_datasets/3DPW/original/*.zip`, extracted to `data/3DPW/` | [3DPW](https://virtualhumans.mpi-inf.mpg.de/3DPW/), registration required |
+| `SMPL_NEUTRAL.pkl` | `models/smpl/` | [SMPL](https://smpl.is.tue.mpg.de/), registration required |
+| `multiHMR_672_L_anny.pt`, `multiHMR_672_S.pt` | `models/multiHMR/` | Naver Multi-HMR release |
+
+Nothing in this list may be redistributed; do not commit them.
+
+---
+
+## Track A: training the Anny model
+
+### Teacher (ViT-L) — done
+
+Best checkpoint: `anny_s2_shape_v5`, epoch 99 (318M params).
+Holdout (last 100 Anny-One samples, never trained on): **PVE 73.6 mm, PA-PVE 56.5, MPJPE 73.2**.
+
+How it was reached, one job script per step:
+
+1. `train_step1_pretrained_bb.sh` / `train_step2_frozen_bb.sh`: backbone from `multiHMR_672_L_anny` (`--pretrained_remap 1 --load_only_backbone 1`), fresh heads; full fine-tune vs frozen backbone.
+2. `train_s2_partialft.sh`: unfreeze the last 4 ViT blocks + mask the 88 Anny helper bones out of the rotation loss (`--mask_helper_joints_train 1`). PVE 145 → 75.
+3. `train_s2_boosted_v4.sh`: per-joint loss boost on neck and hands (`loss.py`, `--boost_neck_weight`). No measurable gain.
+4. `train_s2_shape_v5.sh`: `--alpha_shape 20`. Fixed the shape head: age error +0.199 → −0.001, height −0.154 → −0.026 against Anny-One ground truth.
+5. `train_v6_resume*.sh`, `train_v7_scratch.sh`, `train_v8_*.sh`: continuation / clean-baseline runs.
+
+Known limitation: the rendered neck looks elongated. Four candidate causes were eliminated by measurement (body model via `--rest_pose`, helper mask via `check_mask_boost.py`, domain gap via in-domain demos, shape via `compare_gt_pred_shape.py`); what remains is linear blend skinning across Anny's stacked neck bones, a rig property.
+
+### Student (ViT-S) by knowledge distillation — in progress
+
+`distill.py` + flags in `train.py`. Feature-level KL on backbone patch tokens (temperature 4, channel softmax, T² scaling), optional output-level L1 (`--lambda_kd_out`), optional head transfer from the teacher (`--init_heads_from_teacher`, `--freeze_heads_epochs`), and from v6 a projector that feeds the heads teacher-width tokens (`--head_dim 1024`).
+
+| run | script | change | holdout PVE |
+|---|---|---|---|
+| v1/v2 | `train_distill_vits.sh`, `_v2.sh` | feature KD, random heads | 228 at ep0 → 193.4 (PA-PVE 128) |
+| v3 | `_v3.sh` | + teacher heads + output KD | 274 at ep45 |
+| v4 | `_v4.sh` | + HMR-trained ViT-S backbone, colour jitter, batch 8 | 251 at ep25 |
+| v5 | `_v5.sh` | + 5-epoch head freeze | 315 at ep5 |
+| v6 | `_v6.sh` | + projector-fed heads (67/67 tensors transfer) | pending |
+
+The HMR-pretrained student backbone (v4) is the one change that clearly helped. Head transfer has not beaten random heads yet; v6 is the decisive test of that idea, with "v4 without head transfer" as the fallback.
+
+### Evaluation
+
+`run_eval_test.sh` evaluates a checkpoint on the Anny-One holdout with PVE, PA-PVE, MPJPE, PA-MPJPE and detection precision/recall (`--eval_only 1 --test_anny_n 100`). Always read recall next to PVE: the mesh metrics are computed only over matched detections.
+
+---
+
+## Track B: converting 3DPW ground truth from SMPL to Anny
+
+3DPW labels are SMPL parameters; the model speaks Anny. `smpl_to_anny.py` fits Anny's 163 rotations + 11 phenotypes + translation to the 24 SMPL joints of each frame by staged gradient descent (root → root+pose → +shape), one shared body per sequence, and writes an `.npz` with everything `render_anny_fit.py` needs to put the mesh back on the photo.
+
 ```bash
-python3.9 demo.py \
-    --img_folder example_data \
-    --out_folder demo_out \
-    --save_rotating_video 1 \
-    --model_name multiHMR_672_L_anny
+# inspect both rest skeletons and the joint correspondences (no fitting)
+python smpl_to_anny.py --check_mapping --smpl_model_path models/smpl/SMPL_NEUTRAL.pkl
+# convert one sequence and render it           (Slurm: run_smpl_to_anny.sh, MODE=fit_and_render)
+python smpl_to_anny.py --pkl data/3DPW/sequenceFiles/test/outdoors_fencing_01.pkl \
+    --smpl_model_path models/smpl/SMPL_NEUTRAL.pkl --out threedpw_anny_v21/outdoors_fencing_01.npz \
+    --max_frames 40 --frame_stride 25
+python render_anny_fit.py --npz threedpw_anny_v21/outdoors_fencing_01.npz \
+    --img_dir data/3DPW/imageFiles/outdoors_fencing_01 --out renders/outdoors_fencing_01
+# four diverse scenes at once                    (run_smpl_to_anny_scenes_v21.sh)
 ```
 
-## Pre-trained models
-We provide multiple pre-trained checkpoints.
-Here is a list of their associated features.
-Once downloaded you need to place them into `$HOME/models/multiHMR`.
+Progress on `outdoors_fencing_01`, 38 frames, all 24 joints:
 
-| modelname                     | training data                     | backbone | resolution | runtime (ms) | PVE-3PDW-test | PVE-EHF | PVE-BEDLAM-val | comment |
-|------------------------------------------|---------------------------|----------|------------|--------------|----------|---------|---------|---------|
-| [multiHMR_896_L](https://download.europe.naverlabs.com/ComputerVision/MultiHMR/multiHMR_896_L.pt)  [HuggingFace model](https://huggingface.co/naver/multiHMR_896_L) | BEDLAM+AGORA+CUFFS+UBody                      | ViT-L    | 896x896    |    126      | 89.9  | 42.2 | 56.7 | initial ckpt |
-| [multiHMR_672_L_anny](https://download.europe.naverlabs.com/ComputerVision/MultiHMR/multiHMR_672_L_anny.pt)   |BEDLAM+ITW+AnnyOne                      | ViT-L    | 672x672    |           |   |  |  |  |
-| [multiHMR_672_L](https://download.europe.naverlabs.com/ComputerVision/MultiHMR/multiHMR_672_L.pt)   |BEDLAM+AGORA+CUFFS+UBody                      | ViT-L    | 672x672    |     74      | 94.1  | 37.0 | 58.6 | longer training |
-| [multiHMR_672_B](https://download.europe.naverlabs.com/ComputerVision/MultiHMR/multiHMR_672_B.pt)   |BEDLAM+AGORA+CUFFS+UBody                      | ViT-B    | 672x672    |     43      | 94.0  | 43.6 | 67.2 | longer training |
-| [multiHMR_672_S](https://download.europe.naverlabs.com/ComputerVision/MultiHMR/multiHMR_672_S.pt)    |BEDLAM+AGORA+CUFFS+UBody                      | ViT-S    | 672x672    |     29      | 102.4 | 49.3 | 78.9 | longer training |
-| [multiHMR_1288_L_bedlam](https://download.europe.naverlabs.com/ComputerVision/MultiHMR/multiHMR_1288_L_bedlam.pt)     |BEDLAM(train+val)                      | ViT-L    | 1288x1288    |    ?       | ? | ? | ckpt used for BEDLAM leaderboard |
-| [multiHMR_1288_L_agora](https://download.europe.naverlabs.com/ComputerVision/MultiHMR/multiHMR_1288_L_agora.pt)     | BEDLAM(train+val)+AGORA(train+val)                      | ViT-L    | 1288x1288    |    ?       | ? | ? | ckpt used for AGORA leaderboard |
+| version | mean joint error | what changed |
+|---|---|---|
+| v1 | 34.3 mm | name-based joint mapping; same error floor and same (female) body for every scene |
+| v2 | 24.6 mm | mapping checked by rest-pose geometry (spine numbering was reversed, hips on the wrong bone); targets = 3DPW's own `jointPositions`; gender fixed from the data; only skeletal phenotypes fitted |
+| v2.1 | **15.8 mm** | torso joints fitted as rest-pose-measured "virtual joints" inside the bone frame; bone mask; warm start between frames; shared-body refine pass. Torso rows 13–22 mm, limbs 4–12 mm, 11 s/frame |
 
-We compute the runtime on GPU V100-32GB.
+The renderer draws SMPL ground-truth joints (red) and fitted Anny joints (green) on the overlay, so "camera/frame plumbing is right" and "the fit is right" can be judged separately. (v1's renders were drawn on the wrong images: 3DPW's `img_frame_ids` is the 60 Hz index map, not the image number.)
 
-<details>
-<summary><b>Download SMPL-X model (optional)</b></summary>
-<br>
-Besides these files, you also need to download the *SMPLX* model.
-You will need the [neutral model](http://smplify.is.tue.mpg.de) for running the demo code.
-Please go to the corresponding website and register to get access to the downloads section.
-Download the model and place `SMPLX_NEUTRAL.npz` in `./models/smplx/`.
-</details>
+`npz_to_annyone.py` turns a fit into Anny-One-style label pickles for mixed synthetic + real training (next step).
 
-## Training Multi-HMR
-We provide code for training Multi-HMR using a single GPU on BEDLAM-training and evaluating it on BEDLAM-validation, EHF and 3DPW-test.
+---
 
-Activate environnement
+## Demo
+
 ```bash
-source .multihmr/bin/activate
-export PYTHONPATH=`pwd`
+# real photos (run_demo.sh): detector-guided crops, helper-bone mask, neutral hands
+python demo.py --model_name <ckpt> --img_folder example_data --out_folder demo_out \
+    --use_person_detector 1 --mask_helper_joints 1 --relax_hands 1 --fov 55
+# AnnyOne images (run_demo_syn.sh): in-domain, per-image FOV from the dataset
+python anyone_image_export.py --n 10 --split holdout --out annyone_demo_images
+python demo.py --model_name <ckpt> --img_folder annyone_demo_images --use_person_detector 0 \
+    --fov_json annyone_fov.json
 ```
 
-### Preprocessing BEDLAM
-The first thing that you need to do is to download the BEDLAM dataset (6fps version) and place the files into ```data/BEDLAM```
-The data structure of the directory should look like this:
-```bash
-data/BEDLAM
-      |
-      |---validation
-                  |
-                  |---20221018_1_250_batch01hand_zoom_suburb_b_6fps
-                                                              |
-                                                              |---png
-                                                                  |
-                                                                  |---seq_000000
-                                                                              |
-                                                                              |---seq_000000_0000.png
-                                                                              ...
-                                                                              |---seq_000000_0235.png
-                                                                  ...
-                                                                  |---seq_000249
-                  ...
-                  |---20221019_3-8_250_highbmihand_orbit_stadium_6fps
-      |---training
-              |
-              |---20221010_3_1000_batch01hand_6fps
-              ...
-              |---20221024_3-10_100_batch01handhair_static_highSchoolGym_30fps
-      |---all_npz_12_training
-              |
-              |---20221010_3_1000_batch01hand_6fps.npz
-              ...
-              |---20221024_3-10_100_batch01handhair_static_highSchoolGym_30fps.npz
-      |---all_npz_12_validation
-            |
-            |---20221018_1_250_batch01hand_zoom_suburb_b_6fps.npz
-            ...
-            |---20221019_3-8_250_highbmihand_orbit_stadium_6fps.npz
-```
+Inference-time toggles added to `demo.py`: `--mask_helper_joints`, `--relax_hands`, `--rest_pose`, `--neutral_phenotypes`, `--no_filter`, `--fov_json`. Units differ between the real-photo path (cm) and the in-domain path (m); the renderer auto-detects them. AnnyOne images each have their own camera (FOV 51–118° measured), so a single global `--fov` mis-places meshes; always pass the per-image map.
 
-We need to build the annotation files for the training and validation sets. It may takes around 20 minutes for bulding the pkl files depending on your CPU.
-```bash
-python3.9 datasets/bedlam.py "create_annots(['validation', 'training'])"
-```
-You will get two files ```data/bedlam_validation.pkl``` and ```data/bedlam_training.pkl```.
+---
 
-### Checking annotations
-Visualize the annotation of a specific image.
-```bash
-python3.9 datasets/bedlam.py "visualize(split='validation', i=1500)"
-```
-It will create a file ```bedlam_validation_15000.jpg``` where you can see the RGB image on the left side and the RGB image with meshes overlayed on the right side.
+## Diagnostics
 
-### (Optional) Creating jpg files to fast data-loading
-BEDLAM is composed of PNG files and loading them could be a bit slow depending our your infrastucture.
-The following command will generate one jpg file for each png file with maximal resolution of 1280.
-It may take a while because BEDLAM has more than 300k images. You can run the command lines on some specific subdirectories to speed-up the generation of jpg files. You can chose the target size of your choice.
-```bash
-# Can be slow
-python3.9 datasets/bedlam.py "create_jpeg(root_dir='data/BEDLAM', target_size=1280)
+| script | question it answers |
+|---|---|
+| `inspect_ckpt.py`, `inspect_prefix.py` | which model class does this checkpoint fit; how many tensors would actually load |
+| `check_mask_boost.py` | are the boosted neck/hand bones also masked (loss = 0)? |
+| `compare_gt_pred_shape.py`, `run_shape_check.sh` | predicted vs ground-truth phenotypes on the same holdout images |
+| `phenotype_stats.py` | ground-truth phenotype distribution of Anny-One (e.g. are there children at all?) |
+| `check_shape.py`, `explore_anny.py`, `test_loader.py` | dataset fields, phenotype label order, dataloader smoke test |
+| `check_anny_fit.py` | validity, per-joint error, left/right mirror test and 3D overlays of a conversion `.npz` |
 
-# Or parallelize
-python3.9 datasets/bedlam.py "create_jpeg(root_dir='data/BEDLAM/validation/20221019_3-8_250_highbmihand_orbit_stadium_6fps', target_size=1280)
-...
-python3.9 datasets/bedlam.py "create_jpeg(root_dir='data/BEDLAM/training/20221010_3-10_500_batch01hand_zoom_suburb_d_6fps', target_size=1280)
-```
+---
 
-### Checking the data-loading time
-You can check the quality of your dataloader by running the command above. It will use the png version of BEDLAM.
-```bash
-python3.9 datasets/bedlam.py "dataloader(split='validation', batch_size=16, num_workers=4, extension='png', img_size=1280, n_iter=100)"
-```
+## Rules learned the hard way
 
-### Preprocessing additional validation sets
-We also provide code for evaluating on EHF and 3DPW.
-Run the command for bulding the annotation fiel for EHF.
-```bash
-python3.9 datasets/ehf.py "create_annots()"
-python3.9 datasets/ehf.py "visualize(i=10)"
-```
-And for 3DPW. Please download SMPL-male and SMPL-female models, put them into ```models/smpl/SMPL_MALE.pkl``` and ```models/smpl/SMPL_FEMALE.pkl```. And ```smplx2smpl.pkl``` is mandatory for moving from SMPLX to SMPL.
-```bash
-python3.9 datasets/threedpw.py "create_annots()"
-python3.9 datasets/threedpw.py "visualize(i=1011)"
-```
+- Always a fresh `--name` per run: checkpoint cleanup keeps the 10 highest epoch numbers, so resuming into an old folder deletes the new checkpoints immediately.
+- Verify weight loading by count (`N/M tensors, X%`); `strict=False` hides failures.
+- Resume with roughly 1/10 of the cold-start learning rate, and size the decay schedule to the epoch budget (v1 distillation decayed to 4e-7 by epoch 240 and stopped learning).
+- The 6D rotation identity is indices (0, 3), not (0, 4): the latter makes Gram-Schmidt divide by zero and every fit NaN.
+- `/ds-av` must be in `--container-mounts` or 3DPW does not exist inside the job.
+- Diagnose by elimination with measurements, not by guessing; three wrong hypotheses preceded the right one on the NaN bug and four on the neck.
 
-### Training on BEDLAM-train
-We provide the command for training on BEDLAM-train at resolution 336 on a single GPU.
-```bash
-# python command
-CUDA_VISIBLE_DEVICES=1 python3.9 train.py \
---backbone dinov2_vits14 \
---img_size 336 \
--j 4 \
---batch_size 32 \
--iter 10000 \
---max_iter 500000 \
---name multi-hmr_s_336
-```
-To decrease data-loading time use ```--extension jpg --res 1280```
+---
 
-### Evaluating BEDLAM-val / EHF-test / 3DPW-test
-Above command is for evaluating a pretrained ckpt on validation sets.
-```bash
-CUDA_VISIBLE_DEVICES=0 python3.9 train.py \
---eval_only 1 \
---backbone dinov2_vitl14 \
---img_size 896 \
---val_data EHF THREEDPW BEDLAM \
---val_split test test validation \
---val_subsample 1 20 25 \
---pretrained models/multiHMR/multiHMR_896_L.pt
-```
-Either check the log or open the tensorboard for checking the results.
+## Status (October 2026)
 
-### CUFFS dataset
-The Close-Up Frames of Full-Body Subjects dataset, containing humans close to the camera with diverse hand poses is available [here](https://download.europe.naverlabs.com/ComputerVision/MultiHMR/CUFFS/)([LICENSE](https://download.europe.naverlabs.com/ComputerVision/MultiHMR/CUFFS/CUFFS_Dataset_LICENSE.txt)).
-More information about how to use it will be given soon, stay tuned.
-
-## License
-Code and checkpoints are provided under the terms of this [LICENSE](LICENSE.txt) and accompanying [NOTICE](NOTICE.txt).
-The licence for the Multi-HMR checkpoint with the Anny body model is here: [LICENSE](https://download.europe.naverlabs.com/ComputerVision/MultiHMR/Checkpoint_License_Anny.txt)
-
-## Citing
-If you find this code useful for your research, please consider citing the following paper:
-```bibtex
-@inproceedings{multi-hmr2024,
-    title={Multi-HMR: Multi-Person Whole-Body Human Mesh Recovery in a Single Shot},
-    author={Baradel*, Fabien and 
-            Armando, Matthieu and 
-            Galaaoui, Salma and 
-            Br{\'e}gier, Romain and 
-            Weinzaepfel, Philippe and 
-            Rogez, Gr{\'e}gory and
-            Lucas*, Thomas
-            },
-    booktitle={ECCV},
-    year={2024}
-}
-```
+- Teacher: done, evaluated.
+- Distillation: v6 (projector-fed heads) running; decision rule: holdout PVE clearly below 228 and PA-PVE below 128 at epochs 5–10, else fall back to random heads with the HMR-pretrained backbone.
+- 3DPW conversion: v2.1 at 15.8 mm on the fencing scene; four-scene run and supervisor's visual check pending; then the mixed synthetic + 3DPW student run.
+- Thesis draft (`main.tex`) written with placeholders for the runs above.
 
