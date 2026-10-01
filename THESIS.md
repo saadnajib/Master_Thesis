@@ -75,6 +75,11 @@ split during training. They are validation scores, not test scores.
 
 - **Held-out AnnyOne test set:** `run_eval_test.sh` evaluates the last `--test_anny_n`
   samples; validation uses the `--val_anny_n` samples before them. Train excludes both.
+  **Caveat:** every existing checkpoint, the v5 teacher included, was trained on all but
+  the last 100 samples, and those 100 were used to pick checkpoints. A clean test number
+  needs one retraining run with `--test_anny_n 500 --val_anny_n 100`. Until then,
+  `train.py` records how many evaluated samples the checkpoint saw in training in the
+  `n_seen_in_training` column.
 - **3DPW:** `run_eval_3dpw.sh` runs the 3DPW path in `train.py` on the teacher.
 - Metrics: PVE, PA-PVE, MPJPE, PA-MPJPE over 163 Anny joints, plus detection
   precision, recall and F1. Every evaluation appends a row to `results/<run>.csv`

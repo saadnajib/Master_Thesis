@@ -1,4 +1,5 @@
 #!/bin/bash
+# HELD-OUT TEST evaluation (train.py --eval_split test). NOTE: the previous version of this script (train_v3.py) evaluated on the VALIDATION samples, so its numbers were not a test result.
 # =============================================================================
 # AnnyOne TEST-SET EVALUATION - the 4 standard metrics
 # =============================================================================
@@ -19,12 +20,21 @@
 # person - a model that detects few people can score well on the four metrics
 # while missing most of the humans. Always report recall next to PVE.
 #
-# WHICH SAMPLES: the last --test_anny_n of the dataset. Training reserved the
-# last --val_anny_n (100) as holdout, so:
-#     --test_anny_n 100   -> exactly the held-out samples, never trained on
-#     --test_anny_n >100  -> reaches back into TRAINING data; the script warns
-#                            and prints which indices were seen. Numbers from
-#                            that range are optimistic and not a fair test.
+# WHICH SAMPLES (train.py anny_split_ranges, N = AnnyOne size):
+#     [0, N-600)       train
+#     [N-600, N-500)   val   (--val_anny_n 100, the samples just BEFORE test)
+#     [N-500, N)       test  (--test_anny_n 500)  <- evaluated here
+# Runs trained with the same --test_anny_n/--val_anny_n never see val or test.
+#
+# WARNING: anny_s2_shape_v5 was trained BEFORE this split existed, with only
+# --val_anny_n 100, i.e. on indices [0, N-100). So 400 of these 500 test
+# samples were in its training set. train.py reads the training args stored
+# in the checkpoint, prints the overlap, and records it in the
+# n_seen_in_training column of results/<name>.csv. Only a model retrained with
+# --test_anny_n 500 --val_anny_n 100 gets a clean test number here.
+#
+# Results: printed, and appended as a row to results/eval_<run>_<epoch>.csv
+# and results/all_results.jsonl (see results/README.md).
 # =============================================================================
 #SBATCH --job-name=mhmr-eval-test
 #SBATCH --partition=A100-40GB,A100-80GB,L40S-AV,A100-RP,A100-PCI,RTXA6000
@@ -42,8 +52,9 @@ mkdir -p /netscratch/najib/multi-hmr/logs
 # >>> WHICH CHECKPOINT TO EVALUATE <<<
 RUN_NAME="anny_s2_shape_v5"
 EPOCH="00099"
-# >>> HOW MANY TEST SAMPLES (100 = exactly the untrained holdout) <<<
-TEST_N=100
+# >>> SPLIT SIZES (must match what the evaluated model was trained with) <<<
+TEST_N=100   # 100 = exactly the samples anny_s2_shape_v5 never trained on (but they were its validation set). Use 500 only for models retrained with --test_anny_n 500 --val_anny_n 100.
+VAL_N=100
 
 COMMAND=$(cat <<EOF
 set -euo pipefail
@@ -73,16 +84,18 @@ if [ ! -f "\$CKPT" ]; then
   echo "Check: ls -lt /netscratch/najib/multi-hmr/logs/anny_model/${RUN_NAME}/checkpoints/"
   exit 1
 fi
-echo "Evaluating \$CKPT on the last ${TEST_N} AnnyOne samples"
+echo "Evaluating \$CKPT on the AnnyOne TEST split (last ${TEST_N} samples; val = the ${VAL_N} before them)"
 
-# --eval_only 1 : no training, just run evaluate() and print the metrics.
-# --test_anny_n : builds the AnnyOne test split (see header).
+# --eval_only 1     : no training, just run evaluate() and print the metrics.
+# --eval_split test : evaluate the held-out test split, not validation.
+# --test_anny_n / --val_anny_n : define the splits (see header).
 # Architecture flags must MATCH the checkpoint or the weights will not load.
-python train_v3.py \\
+python train.py \\
     --eval_only 1 \\
+    --eval_split test \\
     --train_data AnnyOne \\
     --test_anny_n ${TEST_N} \\
-    --val_anny_n 100 \\
+    --val_anny_n ${VAL_N} \\
     --person_center head \\
     --pretrained "\$CKPT" \\
     --pretrained_remap 0 \\
