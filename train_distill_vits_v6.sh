@@ -14,7 +14,7 @@
 #   trained to map student tokens onto the teacher's token distribution was
 #   only used inside the loss and never fed to the heads.
 #
-# THE FIX (apply_student_fix_v3.py, patches model.py + train.py):
+# THE FIX (archive/patches/apply_student_fix_v3.py; already applied to model.py + train.py):
 #   --head_dim 1024   a linear 384->1024 projector after the backbone; every
 #                     head is built at 1024, so ALL 67 head tensors transfer
 #                     ("heads initialised from teacher: 67/67"). The feature
@@ -35,10 +35,6 @@
 # below 228 (random heads' first eval) and PA-PVE clearly below 128. If it is
 # not, head transfer is dead: run the fallback (this script without
 # --init_heads_from_teacher / --freeze_heads_epochs / --head_dim).
-#
-# BEFORE SUBMITTING (once):
-#   cp model.py model.py.bak_before_v3 ; cp train.py train.py.bak_before_v3
-#   python apply_student_fix_v3.py
 # =============================================================================
 #SBATCH --job-name=mhmr_distill_s_v6
 #SBATCH --partition=A100-40GB,A100-80GB,L40S-AV,A100-RP,A100-PCI,L40S,RTXA6000,RTXB6000
@@ -69,21 +65,6 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
 python -c "import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14', pretrained=False)" || true
 find /netscratch/najib/torch_cache/hub/facebookresearch_dinov2_main/dinov2 -name "*.py" -exec sed -i 's/ | None//g' {} +
-
-# Refuse to run on an unpatched train.py - the flags would be silently ignored
-# by argparse and the run would be a repeat of v2.
-if ! grep -q "init_heads_from_teacher" train.py; then
-  echo "ERROR: train.py is not patched. Run:  python apply_student_fix.py train.py"
-  exit 1
-fi
-if ! grep -q "freeze_heads_epochs" train.py; then
-  echo "ERROR: train.py lacks the warm-up patch. Run:  python apply_student_fix_v2.py train.py"
-  exit 1
-fi
-if ! grep -q "head_dim" train.py || ! grep -q "feat_proj" model.py; then
-  echo "ERROR: v3 patch missing. Run:  python apply_student_fix_v3.py   (patches model.py and train.py)"
-  exit 1
-fi
 
 TEACHER="/netscratch/najib/multi-hmr/logs/anny_model/anny_s2_shape_v5/checkpoints/00099.pt"
 [ -f "$TEACHER" ] || { echo "ERROR: teacher not found: $TEACHER"; exit 1; }

@@ -30,6 +30,63 @@ import anny
 # --- CUSTOM ANNYONE DATALOADER HACK (V3: NATIVE) ---
 from datasets.annyone import AnnyOne
 from datasets.bedlam import collate_fn as raw_collate
+import csv
+import json
+import datetime
+
+# The --val_data loaders (BEDLAM/EHF/THREEDPW, built in main()) and the BEDLAM
+# training branch refer to `collate_fn`, which was never defined in this file
+# (only the `raw_collate` alias above), so they raised NameError. It is the
+# same function from datasets.bedlam.
+collate_fn = raw_collate
+
+
+# ---------------------------------------------------------------------------
+# AnnyOne tail splits
+# ---------------------------------------------------------------------------
+# Layout of the AnnyOne index range [0, n_total):
+#
+#     [0, val_start)            train
+#     [val_start, test_start)   validation  (--val_anny_n samples)
+#     [test_start, n_total)     test        (--test_anny_n samples)
+#
+# With --test_anny_n 0 there is no test split (test_start == n_total) and the
+# validation set is the last --val_anny_n samples, exactly as before.
+def anny_split_ranges(n_total, val_n, test_n):
+    test_start = max(0, n_total - test_n) if test_n > 0 else n_total
+    val_start = max(0, test_start - val_n) if val_n > 0 else test_start
+    return val_start, test_start
+
+
+def anny_trained_end(n_total, a):
+    """Exclusive end of the AnnyOne index range a checkpoint was TRAINED on
+    (training always uses a prefix [0, end)), reconstructed from the args
+    Namespace saved inside the checkpoint. None if it cannot be determined."""
+    if a is None or getattr(a, 'train_data', None) != 'AnnyOne':
+        return None
+    train_n = int(getattr(a, 'train_n', 0) or 0)
+    val_n = int(getattr(a, 'val_anny_n', 0) or 0)
+    test_n = int(getattr(a, 'test_anny_n', 0) or 0)
+    if getattr(a, 'eval_only', 0):
+        return None  # an eval-only run never saves checkpoints; be safe
+    if train_n > 0:
+        return min(train_n, n_total)
+    if test_n > 0:
+        return anny_split_ranges(n_total, val_n, test_n)[0]
+    if val_n > 0:
+        return n_total - val_n
+    return n_total
+
+
+# Column order of results/<run_name>.csv (one row per evaluate() call).
+RESULT_FIELDS = [
+    'timestamp', 'run_name', 'checkpoint', 'split', 'dataset', 'n_samples',
+    'n_images_scored', 'epoch', 'iter',
+    'PVE', 'PA-PVE', 'MPJPE', 'PA-MPJPE', 'mpjpe_joints',
+    'precision', 'recall', 'F1',
+    'n_gt_humans', 'n_matched', 'n_missed', 'n_false_pos',
+    'n_seen_in_training',
+]
 
 class Trainer(object):
     def __init__(self, model, loss, optimizer, device, args, best_val=1e5, scheduler=None,
@@ -540,8 +597,46 @@ class Trainer(object):
 
         return 1
 
+    def _write_results(self, row):
+        """Append one evaluation row to <results_dir>/<run_name>.csv (header
+        created if the file is new) and to <results_dir>/all_results.jsonl.
+        Never raises: a failed write must not kill a training run."""
+        try:
+            rdir = getattr(self.args, 'results_dir', 'results') or 'results'
+            if not os.path.isabs(rdir):
+                rdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), rdir)
+            os.makedirs(rdir, exist_ok=True)
+            row = {k: ('' if v is None else v) for k, v in row.items()}
+            safe_name = str(row.get('run_name', 'run')).replace(os.sep, '_')
+            csv_path = os.path.join(rdir, f"{safe_name}.csv")
+
+            fieldnames = list(RESULT_FIELDS)
+            is_new = not os.path.isfile(csv_path) or os.path.getsize(csv_path) == 0
+            if not is_new:
+                # reuse the existing header so columns never shift
+                with open(csv_path, newline='') as f:
+                    header = next(csv.reader(f), None)
+                if header:
+                    fieldnames = header
+            with open(csv_path, 'a', newline='') as f:
+                w = csv.DictWriter(f, fieldnames=fieldnames, restval='',
+                                   extrasaction='ignore')
+                if is_new:
+                    w.writeheader()
+                w.writerow(row)
+
+            with open(os.path.join(rdir, 'all_results.jsonl'), 'a') as f:
+                f.write(json.dumps(row) + '\n')
+            print(f"[results] appended '{row.get('split')}' row to {csv_path}", flush=True)
+        except Exception as e:
+            print(f"[results] WARNING: could not write results: {type(e).__name__}: {e}",
+                  flush=True)
+
     @torch.no_grad()
-    def evaluate(self, data):
+    def evaluate(self, data, split=None, checkpoint=None, epoch=None):
+        """Run the metrics over `data` and append a row to the results files.
+        split/checkpoint/epoch only label that row; when None they are derived
+        from the dataset attributes and the trainer state."""
         print(f"\nEVAL: ")
         self.model.eval()
 
@@ -554,6 +649,7 @@ class Trainer(object):
                                                'mpjpe', 'pa_mpjpe'
                                                ]}
         count, miss, fp = 0, 0, 0
+        n_scored = 0  # images that reached the metrics (not skipped)
 
         for i, (x,y) in enumerate(tqdm(data)):
             if x is None or y is None:
@@ -565,6 +661,7 @@ class Trainer(object):
             gt = self.prepare_gt(y=y)
             if gt is None:
                 continue
+            n_scored += 1
 
             # forward
             with torch.cuda.amp.autocast(enabled=bool(args.amp)):
@@ -602,7 +699,23 @@ class Trainer(object):
 
                     # moving to smpl mesh for eval because gt are in smpl format
                     if v3d_ctx.shape[0] == 6890:
-                       v3d_hat_ctx = (self.smplx2smpl_regressor @ v3d_hat_ctx)
+                        # The SMPL-X->SMPL regressor only applies to SMPL-X
+                        # predictions (10475 verts). This model predicts Anny
+                        # meshes, which have no vertex correspondence with the
+                        # SMPL GT of 3DPW, so PVE/PA-PVE/MPJPE cannot be
+                        # computed here (the matmul used to crash). Skip the 3D
+                        # metrics; detection P/R/F1 above are still counted.
+                        if v3d_hat_ctx.shape[0] != self.smplx2smpl_regressor.shape[1]:
+                            if not getattr(self, '_warned_smpl_mismatch', False):
+                                self._warned_smpl_mismatch = True
+                                print(f"[eval] WARNING: GT is SMPL (6890 verts) but the "
+                                      f"prediction has {v3d_hat_ctx.shape[0]} verts (not "
+                                      f"SMPL-X). No Anny->SMPL vertex mapping exists in "
+                                      f"train.py, so PVE/PA-PVE/MPJPE/PA-MPJPE are NOT "
+                                      f"computed for {ds_name}; only precision/recall/F1.",
+                                      flush=True)
+                            continue
+                        v3d_hat_ctx = (self.smplx2smpl_regressor @ v3d_hat_ctx)
 
                     # Per-Vertex Error
                     pve = ((torch.sqrt(((v3d_ctx - v3d_hat_ctx) ** 2).sum(-1))) * 1000).mean()
@@ -713,6 +826,58 @@ class Trainer(object):
             print(f"    - {k}: {v.avg:.1f}")
         self.writer.flush() # https://github.com/pytorch/pytorch/issues/24234
         sys.stdout.flush()
+
+        # ---- results as data: results/<run_name>.csv + results/all_results.jsonl
+        if split is None:
+            split = getattr(data.dataset, 'results_split', None)
+        if split is None:
+            if ds_name == '3dpw':
+                split = '3dpw'
+            elif ds_split == 'holdout':
+                split = 'val'
+            else:
+                split = f"{ds_name}-{ds_split}"
+        if checkpoint is None:
+            checkpoint = getattr(self, 'eval_checkpoint', None)
+            if checkpoint is None and not self.args.eval_only:
+                # fit() saves this epoch's checkpoint just before evaluating
+                checkpoint = os.path.join(self.args.ckpt_dir, f"{self.current_epoch:05d}.pt")
+        if epoch is None:
+            epoch = getattr(self, 'eval_epoch', None) if self.args.eval_only else self.current_epoch
+        try:
+            n_samples = len(data.dataset)
+        except Exception:
+            n_samples = ''
+
+        def _m(k):  # '' when the metric was never measured (e.g. no matches)
+            return round(float(meters[k].avg), 4) if meters[k].count > 0 else ''
+
+        det = count > 0  # P/R/F1 are meaningless without any GT humans
+        row = {
+            'timestamp': datetime.datetime.now().isoformat(timespec='seconds'),
+            'run_name': self.args.name,
+            'checkpoint': checkpoint,
+            'split': split,
+            'dataset': ds_name,
+            'n_samples': n_samples,
+            'n_images_scored': n_scored,
+            'epoch': epoch,
+            'iter': self.current_iter,
+            'PVE': _m('pve'),
+            'PA-PVE': _m('pa_pve'),
+            'MPJPE': _m('mpjpe'),
+            'PA-MPJPE': _m('pa_mpjpe'),
+            'mpjpe_joints': ('h36m14' if ds_name == '3dpw' else 'model_joints') if meters['mpjpe'].count > 0 else '',
+            'precision': _m('precision') if det else '',
+            'recall': _m('recall') if det else '',
+            'F1': _m('f1_score') if det else '',
+            'n_gt_humans': count,
+            'n_matched': meters['pve'].count,
+            'n_missed': miss,
+            'n_false_pos': fp,
+            'n_seen_in_training': getattr(data.dataset, 'n_seen_in_training', ''),
+        }
+        self._write_results(row)
         return meters['pve'].avg
     
 def main(args):
@@ -721,10 +886,17 @@ def main(args):
     model = Model(pretrained_backbone=1, **vars(args))
     model = model.to(device)
 
+    # Epoch / training args stored in the loaded checkpoint (if any). Used by
+    # --eval_only to label result rows and to check split/train overlap.
+    pretrained_epoch, pretrained_args = None, None
+
     # Load from a pretrained model
     if args.pretrained is not None and os.path.isfile(args.pretrained):
         print(f"Loading weights from {args.pretrained}", flush=True)
         ckpt = torch.load(args.pretrained, map_location='cpu')
+        if isinstance(ckpt, dict):
+            pretrained_epoch = ckpt.get('epoch', None)
+            pretrained_args = ckpt.get('args', None)
 
         # Checkpoints from the original repo may not use the 'model_state_dict'
         # key, so locate the state dict rather than assuming.
@@ -975,27 +1147,49 @@ def main(args):
     print()
 
     if args.eval_only:
-        # TEST-SET EVALUATION ON ANNYONE
+        # EVALUATION ON AN ANNYONE SPLIT (--eval_split val|test)
         # The AnnyOne loader is built inside the training branch below, so
-        # --eval_only used to evaluate only BEDLAM/EHF/3DPW and never AnnyOne.
-        # Build the AnnyOne test split here instead.
-        #
-        # Which samples: the LAST --test_anny_n of the dataset. Training uses
-        # --val_anny_n from the tail as holdout, so keep test_anny_n >= that
-        # value or the test set will overlap data the model trained on.
-        if args.train_data == 'AnnyOne' and args.test_anny_n > 0:
+        # build the requested split here. Index layout (see anny_split_ranges):
+        #   [0, val_start) train | [val_start, test_start) val | [test_start, N) test
+        # --val_data loaders (e.g. THREEDPW) built above are evaluated as well.
+        trainer.eval_checkpoint = args.pretrained
+        trainer.eval_epoch = pretrained_epoch
+        want_test = args.eval_split == 'test' and args.test_anny_n > 0
+        want_val = args.eval_split == 'val' and args.val_anny_n > 0
+        if args.train_data == 'AnnyOne' and args.eval_split == 'test' and args.test_anny_n <= 0:
+            print("ERROR: --eval_split test needs --test_anny_n > 0.", flush=True)
+        if args.train_data == 'AnnyOne' and (want_test or want_val):
             from torch.utils.data import Subset
-            test_dataset = AnnyOne(data_folder='/netscratch/najib/anydataset/',
+            eval_dataset = AnnyOne(data_folder='/netscratch/najib/anydataset/',
                                    img_size=args.img_size)
-            n_total = len(test_dataset)
-            start = max(0, n_total - args.test_anny_n)
-            print(f"AnnyOne TEST split: {n_total - start} samples "
-                  f"(indices {start}..{n_total - 1}) out of {n_total}", flush=True)
-            if start < (n_total - args.val_anny_n) and args.val_anny_n > 0:
-                print(f"  NOTE: test_anny_n ({args.test_anny_n}) > val_anny_n "
-                      f"({args.val_anny_n}); samples {start}.."
-                      f"{n_total - args.val_anny_n - 1} WERE SEEN IN TRAINING.",
+            n_total = len(eval_dataset)
+            val_start, test_start = anny_split_ranges(n_total, args.val_anny_n, args.test_anny_n)
+            start, end = (test_start, n_total) if want_test else (val_start, test_start)
+            print(f"AnnyOne {args.eval_split.upper()} split: {end - start} samples "
+                  f"(indices {start}..{end - 1}) out of {n_total} "
+                  f"[train 0..{val_start - 1} | val {val_start}..{test_start - 1} | "
+                  f"test {test_start}..{n_total - 1}]", flush=True)
+
+            # Did the checkpoint train on any of these indices? Reconstructed
+            # from the args saved in the checkpoint (assumes the dataset size
+            # has not changed since training).
+            train_end = anny_trained_end(n_total, pretrained_args)
+            if train_end is None:
+                n_seen = ''
+                print("  NOTE: cannot tell which AnnyOne indices the checkpoint was "
+                      "trained on (no AnnyOne training args in it); overlap NOT checked.",
                       flush=True)
+            else:
+                n_seen = max(0, min(end, train_end) - start)
+                if n_seen > 0:
+                    print(f"  WARNING: {n_seen}/{end - start} of these samples "
+                          f"(indices {start}..{min(end, train_end) - 1}) WERE SEEN IN "
+                          f"TRAINING by this checkpoint (it trained on 0..{train_end - 1}). "
+                          f"These numbers are optimistic, not a clean held-out result.",
+                          flush=True)
+                else:
+                    print(f"  OK: disjoint from the checkpoint's training range "
+                          f"0..{train_end - 1}.", flush=True)
 
             def _test_collate(batch):
                 try:
@@ -1009,17 +1203,23 @@ def main(args):
                     annot['idx'] = torch.arange(img.shape[0])
                 return img, annot
 
-            test_subset = Subset(test_dataset, list(range(start, n_total)))
-            test_subset.name = 'annyone'
-            test_subset.split = 'test'
-            test_subset.subsample = 1
-            l_val_data.append(DataLoader(test_subset, batch_size=1, shuffle=False,
+            eval_subset = Subset(eval_dataset, list(range(start, end)))
+            eval_subset.name = 'annyone'
+            # tensorboard tag: 'holdout' matches what training logs for val
+            eval_subset.split = 'test' if want_test else 'holdout'
+            eval_subset.subsample = 1
+            eval_subset.results_split = args.eval_split
+            eval_subset.n_seen_in_training = n_seen
+            l_val_data.append(DataLoader(eval_subset, batch_size=1, shuffle=False,
                                          num_workers=args.num_workers, drop_last=False,
                                          collate_fn=_test_collate))
 
         if not l_val_data:
             print("ERROR: --eval_only but no evaluation set was built. For AnnyOne "
-                  "pass --train_data AnnyOne --test_anny_n <N>.", flush=True)
+                  "pass --train_data AnnyOne with --eval_split test --test_anny_n <N> "
+                  "or --eval_split val --val_anny_n <N>; for 3DPW pass "
+                  "--val_data THREEDPW --val_split test --val_subsample 1 --val_n -1.",
+                  flush=True)
         for val_data in l_val_data:
             trainer.evaluate(val_data)
     else:
@@ -1078,6 +1278,20 @@ def main(args):
                 indices = list(range(min(args.train_n, len(train_dataset))))
                 train_dataset = Subset(train_dataset, indices)
                 print(f"Using subset of {len(train_dataset)} samples from AnnyOne dataset.", flush=True)
+                if args.test_anny_n > 0:
+                    _vs, _ = anny_split_ranges(len(full_anny_dataset), args.val_anny_n, args.test_anny_n)
+                    if len(train_dataset) > _vs:
+                        print(f"WARNING: --train_n {args.train_n} reaches into the val/test "
+                              f"tail (starts at index {_vs}); splits are NOT disjoint.", flush=True)
+            elif args.test_anny_n > 0:
+                # held-out TEST split: train excludes both val and test
+                from torch.utils.data import Subset
+                _vs, _ts = anny_split_ranges(len(train_dataset), args.val_anny_n, args.test_anny_n)
+                train_dataset = Subset(train_dataset, list(range(_vs)))
+                print(f"Training on {_vs} samples; {_ts - _vs} reserved for val "
+                      f"(indices {_vs}..{_ts - 1}) and {len(full_anny_dataset) - _ts} "
+                      f"for test (indices {_ts}..{len(full_anny_dataset) - 1}, never "
+                      f"evaluated during training).", flush=True)
             elif args.val_anny_n > 0:
                 # full-dataset training: hold out the LAST val_anny_n samples
                 from torch.utils.data import Subset
@@ -1114,14 +1328,20 @@ def main(args):
             # from training below to keep the holdout clean.
             if args.val_anny_n > 0:
                 from torch.utils.data import Subset
-                val_start = max(0, len(full_anny_dataset) - args.val_anny_n)
-                val_end = len(full_anny_dataset)
+                if args.test_anny_n > 0:
+                    # val = the val_anny_n samples just BEFORE the test tail
+                    val_start, val_end = anny_split_ranges(
+                        len(full_anny_dataset), args.val_anny_n, args.test_anny_n)
+                else:
+                    val_start = max(0, len(full_anny_dataset) - args.val_anny_n)
+                    val_end = len(full_anny_dataset)
                 if val_end > val_start:
                     val_subset = Subset(full_anny_dataset, list(range(val_start, val_end)))
                     # attrs read by evaluate() for logging/tensorboard tags
                     val_subset.name = 'annyone'
                     val_subset.split = 'holdout'
                     val_subset.subsample = 1
+                    val_subset.results_split = 'val'
                     val_loader = DataLoader(
                         val_subset,
                         batch_size=1,
@@ -1247,16 +1467,24 @@ if __name__ == "__main__":
                         help="'channel': each patch token becomes a distribution over feature "
                              "channels (standard). 'token': distribution over spatial tokens.")
     parser.add_argument('--test_anny_n', type=int, default=0,
-                        help='with --eval_only: evaluate on the LAST N AnnyOne samples '
-                             '(the test split). Keep >= --val_anny_n used in training, '
-                             'or the test set overlaps training data.')
+                        help='size of the held-out AnnyOne TEST split = the LAST N samples '
+                             '(0 = no test split). When > 0, the --val_anny_n validation '
+                             'samples are the ones immediately BEFORE the test split, and '
+                             'training excludes both. Use --eval_only --eval_split test to '
+                             'evaluate it.')
     parser.add_argument('--person_center', type=str, default='head', choices=['pelvis', 'head', 'nose'])
     parser.add_argument('--visu_to_save', type=int, default=0)
     parser.add_argument('--extension', type=str, default='png', choices=['png', 'jpg'])
     parser.add_argument('--res', type=int, default=None, choices=[None, 512, 1280])
     parser.add_argument('--num_betas', type=int, default=11, choices=[10, 11])
     parser.add_argument('--use_anny_shape', type=int, default=0, choices=[0,1], help='use anny_shape from the dataset as GT phenotypes instead of zeros')
-    parser.add_argument('--val_anny_n', type=int, default=0, help='number of held-out AnnyOne samples for validation (0=disabled); taken from indices after --train_n')
+    parser.add_argument('--val_anny_n', type=int, default=0, help='number of held-out AnnyOne samples for validation (0=disabled); taken from the END of the dataset (the last N samples, or the N samples just before the --test_anny_n test split) and excluded from training unless --train_n is set')
+    parser.add_argument('--eval_split', type=str, default='val', choices=['val', 'test'],
+                        help='with --eval_only and --train_data AnnyOne: which AnnyOne split to '
+                             'evaluate (val needs --val_anny_n > 0, test needs --test_anny_n > 0)')
+    parser.add_argument('--results_dir', type=str, default='results',
+                        help='where evaluate() appends <run_name>.csv and all_results.jsonl '
+                             '(relative paths are resolved against the repo directory)')
     parser.add_argument('--eval_freq', type=int, default=1, help='run evaluation every N epochs')
     parser.add_argument('--det_thresh', type=float, default=0.2)
     parser.add_argument('--nms_kernel_size', type=int, default=3)

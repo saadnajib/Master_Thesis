@@ -10,7 +10,7 @@
 #   scratch, while the teacher's heads had five stages of training. PVE was
 #   still crawling (198 -> 193 over 80 epochs): a bad start, not convergence.
 #
-# TWO CHANGES (see apply_student_fix.py):
+# TWO CHANGES (archive/patches/apply_student_fix.py, already applied):
 #   --init_heads_from_teacher 1   student starts with the teacher's trained
 #                                 heads (same Model class; only embed_dim-
 #                                 dependent input projections stay random)
@@ -56,13 +56,6 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
 python -c "import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14', pretrained=False)" || true
 find /netscratch/najib/torch_cache/hub/facebookresearch_dinov2_main/dinov2 -name "*.py" -exec sed -i 's/ | None//g' {} +
-
-# Refuse to run on an unpatched train.py - the flags would be silently ignored
-# by argparse and the run would be a repeat of v2.
-if ! grep -q "init_heads_from_teacher" train.py; then
-  echo "ERROR: train.py is not patched. Run:  python apply_student_fix.py train.py"
-  exit 1
-fi
 
 TEACHER="/netscratch/najib/multi-hmr/logs/anny_model/anny_s2_shape_v5/checkpoints/00099.pt"
 [ -f "$TEACHER" ] || { echo "ERROR: teacher not found: $TEACHER"; exit 1; }

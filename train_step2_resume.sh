@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# RESUME STEP 2: continue training from the last checkpoint of anny_s2_frozen_bb_v1 (frozen backbone)
+# RESUME STEP 2: continue training from a checkpoint of anny_s2_frozen_bb_v2 (frozen backbone)
 # =============================================================================
 # Difference from the original launch:
 #   --pretrained          : points at OUR OWN last checkpoint now, not the
@@ -14,15 +14,16 @@
 #                           they are no longer random, they are what the last
 #                           run learned. Keeping load_only_backbone=1 would
 #                           throw away that training.
-#   --name                : a NEW name (anny_s2_frozen_bb_v2). Never resume
-#                           into the same folder: the checkpoint cleanup keeps
-#                           the ten HIGHEST epoch numbers, and epoch numbering
-#                           restarts at 0 on each run, so writes would be
-#                           deleted immediately by the old high numbers still
-#                           sitting in that folder (this happened once already).
+#   --name                : anny_s2_frozen_bb_v2 - the SAME folder the checkpoint is
+#                           loaded from. CAUTION: the checkpoint cleanup keeps
+#                           the ten HIGHEST epoch numbers and epoch numbering
+#                           restarts at 0 on each run, so new writes into this
+#                           folder can be deleted immediately by the old high
+#                           numbers already there (this happened once already).
+#                           Use a fresh --name if that matters.
 #
 # >>> EDIT THIS LINE before submitting: set RESUME_EPOCH to the highest
-#     checkpoint number found in anny_s2_frozen_bb_v1/checkpoints/ <<<
+#     checkpoint number found in anny_s2_frozen_bb_v2/checkpoints/ <<<
 # =============================================================================
 #SBATCH --job-name=mhmr_s2_resume
 #SBATCH --partition=A100-40GB,A100-80GB,L40S-AV,A100-RP,A100-PCI,L40S,RTXA6000,RTXB6000
@@ -85,15 +86,14 @@ echo "Resuming step 2 (frozen backbone) from $CKPT"
 # SETTINGS FOR THIS RESUME:
 #   --pretrained_remap 0, --load_only_backbone 0 : see header - load everything,
 #                           our own key names already match.
-#   --freeze_backbone 0    : unchanged from step 1, backbone keeps training.
-#   --learning_rate 1e-4   : UNCHANGED from the original run. If you want to
-#                           lower it for a resume (common practice - anneal as
-#                           training progresses), that's a reasonable call, but
-#                           do it deliberately and apply the SAME change to the
-#                           step-2 resume so the comparison stays fair.
-#   --max_iter 300000      : 150 additional capped epochs (1000 iters each) on
-#                           top of what RESUME_EPOCH already reached.
-#   --name                 : v2, fresh checkpoint dir.
+#   --freeze_backbone 1    : unchanged from step 2, backbone stays frozen.
+#   --learning_rate 3e-5   : LOWERED from the original 1e-4 for the resume
+#                           (anneal as training progresses); the step-1 and
+#                           step-2 resumes use the same value so the comparison
+#                           stays fair.
+#   --max_iter 300000      : 300 capped epochs (1000 iters each); epoch
+#                           numbering restarts at 0 on this run.
+#   --name                 : v2, same dir as the loaded checkpoint (see header).
 
 python train.py \
     --train_data AnnyOne \

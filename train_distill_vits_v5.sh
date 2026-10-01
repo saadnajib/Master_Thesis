@@ -11,7 +11,7 @@
 #   projections produce confident wrong poses, and the gradients from those
 #   then damage the transferred weights before the projections have adapted.
 #
-# THE FIX (see apply_student_fix_v2.py):
+# THE FIX (archive/patches/apply_student_fix_v2.py, already applied):
 #   --freeze_heads_epochs 5   the 54 transferred tensors stay frozen for the
 #                             first 5 epochs; only the 13 random projections,
 #                             the backbone and the KD projector train, with
@@ -60,17 +60,6 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 python -c "import torch; torch.hub.load('facebookresearch/dinov2', 'dinov2_vitl14', pretrained=False)" || true
 find /netscratch/najib/torch_cache/hub/facebookresearch_dinov2_main/dinov2 -name "*.py" -exec sed -i 's/ | None//g' {} +
 
-# Refuse to run on an unpatched train.py - the flags would be silently ignored
-# by argparse and the run would be a repeat of v2.
-if ! grep -q "init_heads_from_teacher" train.py; then
-  echo "ERROR: train.py is not patched. Run:  python apply_student_fix.py train.py"
-  exit 1
-fi
-if ! grep -q "freeze_heads_epochs" train.py; then
-  echo "ERROR: train.py lacks the warm-up patch. Run:  python apply_student_fix_v2.py train.py"
-  exit 1
-fi
-
 TEACHER="/netscratch/najib/multi-hmr/logs/anny_model/anny_s2_shape_v5/checkpoints/00099.pt"
 [ -f "$TEACHER" ] || { echo "ERROR: teacher not found: $TEACHER"; exit 1; }
 echo "Teacher (frozen): $TEACHER"
@@ -89,10 +78,10 @@ if [ ! -f "$STUDENT_BB" ]; then
 fi
 echo "Student backbone init: $STUDENT_BB"
 
-# --learning_rate 5e-5 : heads are already trained (from the teacher), the
-#     backbone is not; a middle value between the 1e-4 cold start and the
-#     2e-5 fine-tune. --lr_decay_every 60 over 150 epochs -> 2 halvings.
-# --start_2d_epoch 0 : heads already produce sensible geometry from step 0.
+# --learning_rate 7e-5 : heads are already trained (from the teacher), the
+#     backbone is not; v3's 5e-5 scaled up for batch 8 (as in v4).
+#     --lr_decay_every 60 over 150 epochs -> 2 halvings.
+# --start_2d_epoch 5 : reprojection losses wait for the head warm-up (see header).
 python train.py \
     --train_data AnnyOne \
     --person_center head \

@@ -95,14 +95,13 @@ fi
 echo "Fresh training; backbone initialised from $CKPT"
 
 # 4. Run Training
-#   Continuing from v5 (own checkpoint, same Model class) - remap/backbone-only
-#       stay OFF, same reasoning as the v3 launch: our own key names already
-#       match, and we want the trained heads back, not just the backbone.
-#   --unfreeze_last_n_blocks 4 / --mask_helper_joints_train 1 : unchanged from v5.
-#   --boost_neck_weight 4 / --boost_hand_weight 4 : carried over from v4/v5.
-#   --learning_rate 1e-5 : unchanged from v5 (still touching backbone blocks
-#       of an already-trained model).
-#   --name : NEW name -> fresh checkpoint dir.
+#   Fresh run from the ORIGINAL repo checkpoint: --pretrained_remap 1 and
+#       --load_only_backbone 1 load only the ViT-L backbone; heads start random.
+#   --freeze_backbone 0 : whole backbone trains.
+#   --mask_helper_joints_train 1 : helper/deform bones masked in the loss.
+#   No --boost_* flags and no --unfreeze_last_n_blocks.
+#   --learning_rate 1e-4 (halved every 30 epochs), 300 capped epochs.
+#   --name anny_v7_scratch : fresh checkpoint dir.
 
 python train.py \
     --train_data AnnyOne \

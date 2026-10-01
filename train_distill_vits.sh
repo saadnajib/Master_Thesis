@@ -87,14 +87,13 @@ echo "Teacher (frozen): $TEACHER"
 echo "Student: dinov2_vits14, trained from scratch heads"
 
 # 4. Run Training
-#   Continuing from v5 (own checkpoint, same Model class) - remap/backbone-only
-#       stay OFF, same reasoning as the v3 launch: our own key names already
-#       match, and we want the trained heads back, not just the backbone.
-#   --unfreeze_last_n_blocks 4 / --mask_helper_joints_train 1 : unchanged from v5.
-#   --boost_neck_weight 4 / --boost_hand_weight 4 : carried over from v4/v5.
-#   --learning_rate 1e-5 : unchanged from v5 (still touching backbone blocks
-#       of an already-trained model).
-#   --name : NEW name -> fresh checkpoint dir.
+#   Student dinov2_vits14 from ImageNet weights with randomly initialised heads
+#       (no --pretrained), fully trainable (--freeze_backbone 0).
+#   --distill_teacher_ckpt / --lambda_kd 1.0 / --kd_temperature 4.0 /
+#       --kd_softmax_dim channel : feature-level KD from the frozen teacher.
+#   --mask_helper_joints_train 1 : helper/deform bones masked in the loss.
+#   --learning_rate 1e-4 (halved every 30 epochs), 300 capped epochs.
+#   --name anny_distill_vits : fresh checkpoint dir.
 
 python train.py \
     --train_data AnnyOne \

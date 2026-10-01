@@ -2,7 +2,7 @@ __pycache__/
 *.pyc
 logs/
 data/
-datasets/
+# datasets/ is NOT ignored: the dataloader package (datasets/annyone.py, bedlam.py, threedpw.py, ehf.py) must be committed
 models/
 demo_out*/
 demo_*/

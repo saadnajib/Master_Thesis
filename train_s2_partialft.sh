@@ -1,4 +1,5 @@
 #!/bin/bash
+# WARNING: header below describes the v3 partial-FT run, but the flags now pass --boost_neck/hand_weight 4 and --name anny_s2_boosted_v4 (same name as train_s2_boosted_v4.sh) - outputs land in the v4 folder.
 # =============================================================================
 # STEP 2 FOLLOW-UP (v3): partial fine-tune + helper-joint masking
 # =============================================================================
