@@ -69,16 +69,16 @@ find /netscratch/najib/torch_cache/hub/facebookresearch_dinov2_main/dinov2 -name
 echo "======================================================"
 echo "2c. Preparing checkpoint for demo..."
 echo "======================================================"
-# >>> UPDATE THIS after anny_distill_vits_v2 has trained for a while <<<
-# Check: ls -lt /netscratch/najib/multi-hmr/logs/anny_model/anny_distill_vits_v2/checkpoints/
-V4_EPOCH="00199"   # placeholder - replace with the real epoch you want to demo
-CKPT_SRC="/netscratch/najib/multi-hmr/logs/anny_model/anny_distill_vits_v2/checkpoints/${V4_EPOCH}.pt"
+# >>> UPDATE THIS after anny_s2_shape_v5 has trained for a while <<<
+# Check: ls -lt /netscratch/najib/multi-hmr/logs/anny_model/anny_s2_shape_v5/checkpoints/
+V4_EPOCH="00099"   # placeholder - replace with the real epoch you want to demo
+CKPT_SRC="/netscratch/najib/multi-hmr/logs/anny_model/anny_s2_shape_v5/checkpoints/${V4_EPOCH}.pt"
 CKPT_NAME="anny_distill_vits_v2_${V4_EPOCH}"
 CKPT_CACHE_DIR="/netscratch/najib/torch_cache/multihmr"
 mkdir -p "$CKPT_CACHE_DIR"
 if [ ! -f "$CKPT_SRC" ]; then
   echo "ERROR: checkpoint not found: $CKPT_SRC"
-  echo "Check: ls -lt /netscratch/najib/multi-hmr/logs/anny_model/anny_distill_vits_v2/checkpoints/"
+  echo "Check: ls -lt /netscratch/najib/multi-hmr/logs/anny_model/anny_s2_shape_v5/checkpoints/"
   exit 1
 fi
 cp "$CKPT_SRC" "$CKPT_CACHE_DIR/${CKPT_NAME}.pt"

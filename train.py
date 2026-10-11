@@ -717,6 +717,15 @@ class Trainer(object):
     
 def main(args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # --- matmul precision (apply_speed_fix.py) -------------------------------
+    if int(getattr(args, 'tf32', 1)):
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        print("[speed] TF32 matmul/conv ENABLED (fp32 range, 10-bit mantissa inputs)", flush=True)
+    else:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        print("[speed] TF32 disabled (plain fp32 matmuls)", flush=True)
 
     model = Model(pretrained_backbone=1, **vars(args))
     model = model.to(device)
@@ -903,6 +912,9 @@ def main(args):
             raise FileNotFoundError(
                 f"--distill_teacher_ckpt not found: {args.distill_teacher_ckpt}")
         teacher, teacher_dim = build_teacher(args.distill_teacher_ckpt, device)
+        if int(getattr(args, 'teacher_bf16', 0)):
+            teacher.backbone_autocast_dtype = torch.bfloat16
+            print("[speed] teacher backbone runs in bfloat16 (tokens cast to fp32 for heads + KD)", flush=True)
 
         # --- initialise the STUDENT's heads from the TEACHER ---------------
         # Same Model class -> same key names. Copy everything outside the
@@ -1017,6 +1029,17 @@ def main(args):
                                          num_workers=args.num_workers, drop_last=False,
                                          collate_fn=_test_collate))
 
+            # --- eval-only 3DPW-Anny test loader (apply_mixed_data_fix_v2.py) --
+            if getattr(args, 'mix_3dpw_labels', '') and getattr(args, 'val_3dpw_split', ''):
+                from datasets.threedpw_anny import ThreeDPWAnny
+                eval_3dpw = ThreeDPWAnny(args.mix_3dpw_labels, split=args.val_3dpw_split,
+                                         img_size=args.img_size, n=args.val_3dpw_n, training=False)
+                if len(eval_3dpw) > 0:
+                    l_val_data.append(DataLoader(eval_3dpw, batch_size=1, shuffle=False,
+                                                 num_workers=args.num_workers, drop_last=False,
+                                                 collate_fn=_test_collate))
+                    print(f"3DPW-Anny eval ({args.val_3dpw_split}): {len(eval_3dpw)} images", flush=True)
+
         if not l_val_data:
             print("ERROR: --eval_only but no evaluation set was built. For AnnyOne "
                   "pass --train_data AnnyOne --test_anny_n <N>.", flush=True)
@@ -1085,6 +1108,26 @@ def main(args):
                 train_dataset = Subset(train_dataset, list(range(keep)))
                 print(f"Training on {keep} samples; last {args.val_anny_n} reserved for holdout.", flush=True)
 
+            # --- mixed synthetic + real training (apply_mixed_data_fix.py) ----
+            sampler = None
+            if getattr(args, 'mix_3dpw_labels', ''):
+                from torch.utils.data import ConcatDataset, WeightedRandomSampler
+                from datasets.threedpw_anny import ThreeDPWAnny
+                if args.mix_3dpw_split == 'test':
+                    raise ValueError("--mix_3dpw_split test: never train on the 3DPW test split")
+                real_dataset = ThreeDPWAnny(args.mix_3dpw_labels, split=args.mix_3dpw_split,
+                                            img_size=args.img_size)
+                n_syn, n_real = len(train_dataset), len(real_dataset)
+                if n_real == 0:
+                    raise RuntimeError(f"no 3DPW labels found under {args.mix_3dpw_labels}/{args.mix_3dpw_split}")
+                r = float(args.mix_3dpw_ratio)
+                weights = torch.cat([torch.full((n_syn,), (1.0 - r) / n_syn),
+                                     torch.full((n_real,), r / n_real)])
+                train_dataset = ConcatDataset([train_dataset, real_dataset])
+                sampler = WeightedRandomSampler(weights, num_samples=n_syn + n_real, replacement=True)
+                print(f"[mixed] training on {n_syn} AnnyOne + {n_real} 3DPW-{args.mix_3dpw_split} images; "
+                      f"on average {100 * r:.0f}% of every batch is real 3DPW", flush=True)
+
             # Define it RIGHT HERE, after train_dataset exists
             def bulletproof_collate(batch):
                 try:
@@ -1101,10 +1144,13 @@ def main(args):
             train_data = DataLoader(
                 train_dataset,
                 batch_size=args.batch_size,
-                shuffle=True,
+                shuffle=(sampler is None),
+                sampler=sampler,
                 collate_fn=bulletproof_collate,
                 num_workers=args.num_workers,
                 drop_last=True,
+                pin_memory=True,
+                persistent_workers=(args.num_workers > 0),
             )
 
             # Held-out AnnyOne validation slice (enabled with --val_anny_n > 0).
@@ -1136,6 +1182,16 @@ def main(args):
                 else:
                     print("WARNING: --val_anny_n requested but no samples left after the train subset", flush=True)
 
+            # --- evaluation on converted 3DPW (apply_mixed_data_fix.py) ---------
+            if getattr(args, 'mix_3dpw_labels', '') and getattr(args, 'val_3dpw_split', ''):
+                from datasets.threedpw_anny import ThreeDPWAnny
+                val_3dpw = ThreeDPWAnny(args.mix_3dpw_labels, split=args.val_3dpw_split,
+                                        img_size=args.img_size, n=args.val_3dpw_n, training=False)
+                if len(val_3dpw) > 0:
+                    l_val_data.append(DataLoader(val_3dpw, batch_size=1, shuffle=False, num_workers=0,
+                                                 drop_last=False, collate_fn=bulletproof_collate))
+                    print(f"3DPW-Anny val ({args.val_3dpw_split}): {len(val_3dpw)} images", flush=True)
+
         elif args.train_data == 'BEDLAM':
             train_dataset = BEDLAM(
                 split=args.train_split,
@@ -1152,6 +1208,8 @@ def main(args):
                 shuffle=True,
                 drop_last=True,
                 collate_fn=collate_fn,
+                pin_memory=True,
+                persistent_workers=(args.num_workers > 0),
             )
 
         else:
@@ -1235,6 +1293,24 @@ if __name__ == "__main__":
                         help='student only: width the heads are built at, with a linear projector '
                              'after the backbone. Set to the TEACHER width (1024 for ViT-L) so every '
                              'head tensor transfers with --init_heads_from_teacher. 0 = off.')
+    parser.add_argument('--tf32', type=int, default=1, choices=[0, 1],
+                        help='allow TensorFloat-32 matmuls/convs on Ampere+ GPUs (fp32 range, '
+                             '~2-3x faster). 0 reproduces the old plain-fp32 behaviour.')
+    parser.add_argument('--teacher_bf16', type=int, default=0, choices=[0, 1],
+                        help='run the frozen TEACHER backbone under bfloat16 autocast (no_grad, '
+                             'no overflow risk); tokens are cast back to fp32 before its heads '
+                             'and the KD loss.')
+    parser.add_argument('--mix_3dpw_labels', type=str, default='',
+                        help='root of the converted 3DPW Anny labels (has index_train.txt). '
+                             'When set, real 3DPW images are mixed into AnnyOne training.')
+    parser.add_argument('--mix_3dpw_ratio', type=float, default=0.3,
+                        help='average fraction of real 3DPW samples per batch')
+    parser.add_argument('--mix_3dpw_split', type=str, default='train',
+                        help='3DPW split used for TRAINING (never test)')
+    parser.add_argument('--val_3dpw_split', type=str, default='validation',
+                        help="3DPW split of the same labels to evaluate on every eval ('' = off)")
+    parser.add_argument('--val_3dpw_n', type=int, default=0,
+                        help='evaluate on N evenly spaced 3DPW images (0 = all)')
     parser.add_argument('--freeze_heads_epochs', type=int, default=0,
                         help='with --init_heads_from_teacher: keep every tensor copied from the '
                              'teacher FROZEN for this many epochs so the random embed_dim '

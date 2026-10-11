@@ -277,7 +277,17 @@ class Model(nn.Module):
         out = {}
 
         # Feature extraction
-        z = self.backbone(x)
+        # --- optional reduced-precision BACKBONE (apply_speed_fix.py) --------
+        # Set model.backbone_autocast_dtype = torch.bfloat16 on a frozen teacher:
+        # the backbone runs in bf16, its tokens are cast back to fp32 before the
+        # heads so every downstream quantity keeps full precision. None = fp32.
+        _bb_dtype = getattr(self, 'backbone_autocast_dtype', None)
+        if _bb_dtype is not None and x.is_cuda:
+            with torch.autocast('cuda', dtype=_bb_dtype):
+                z = self.backbone(x)
+            z = z.float()
+        else:
+            z = self.backbone(x)
         if self.feat_proj is not None:
             out['backbone_feat_raw'] = z          # [B, N, backbone_dim], for reference
             z = self.feat_proj(z)                 # [B, N, head_dim] - what the heads see

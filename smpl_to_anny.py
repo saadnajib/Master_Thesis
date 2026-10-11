@@ -1,5 +1,5 @@
 """
-SMPL -> Anny parameter conversion for 3DPW.   (v2.1 - after job 3455031)
+SMPL -> Anny parameter conversion for 3DPW.   (v2.2 - whole-dataset conversion)
 
 WHAT THIS DOES
 --------------
@@ -29,6 +29,23 @@ Optimisation is STAGED, which matters a lot for convergence:
     Stage 2  + body joint rotations
     Stage 3  + shape phenotypes  (shape last: it is the weakest signal and will
              otherwise absorb pose error by deforming the body)
+
+WHAT CHANGED IN v2.2 (after the 4-scene v2.1 run, job 3455549)
+----------------------------------------------------------------
+  1. AGE IS NO LONGER FITTED. All four actors came out at age=0.67 exactly, as
+     in v1 and v2: joints cannot tell a 25-year-old from a 45-year-old, so the
+     optimiser used the age morph to absorb a small torso-length mismatch. The
+     3DPW actors are young adults and AnnyOne's own mean age is 0.55, so age is
+     fixed there (--set_phenotypes age=0.55) and only height and proportions
+     are fitted (--free_phenotypes height,proportions). --set_phenotypes takes
+     any name=value list and also sets the START of free phenotypes.
+  2. PER-FRAME BOUNDING BOX from the posed MESH (not from joints, which sit
+     inside the body and cut off the head): one extra Anny forward per frame,
+     vertices -> camera -> pixels, box clamped to the image, plus the fraction
+     of vertices inside the image ('visible_frac') so heavily truncated people
+     can be filtered when building the training labels. Image size is taken
+     from the principal point (W = 2cx, H = 2cy) - 3DPW is 1080x1920 portrait.
+  3. --quiet: one line per frame only, for the whole-dataset array job.
 
 WHAT CHANGED IN v2.1 AND WHY (job 3455031, outdoors_fencing_01, 38 frames)
 --------------------------------------------------------------------------
@@ -208,7 +225,8 @@ SMPL_TO_ANNY = {
 # Phenotypes that actually move the skeleton. Everything else (muscle, weight,
 # cupsize, firmness, african/asian/caucasian) changes the surface, not the
 # joints, so the joint fit cannot determine it - it stays neutral.
-DEFAULT_FREE_PHENOTYPES = 'age,height,proportions'
+DEFAULT_FREE_PHENOTYPES = 'height,proportions'
+DEFAULT_SET_PHENOTYPES = 'age=0.55'   # AnnyOne mean adult age; joints cannot measure adult age
 
 
 def build_anny():
@@ -687,6 +705,32 @@ def fit_frame(anny_model, target_joints, anny_idx, smpl_idx, device,
     }
 
 
+def mesh_bbox(anny_model, r, trans_smpl, P, K, img_w, img_h, device):
+    """[x_min, y_min, x_max, y_max] of the posed mesh in the image (clamped),
+    and the fraction of vertices that project inside the image."""
+    from utils import rotation_to_homogeneous
+    labels = list(anny_model.phenotype_labels)
+    R = torch.as_tensor(r['anny_rotmat'], dtype=torch.float32, device=device).unsqueeze(0)
+    shp = torch.as_tensor(r['anny_shape'], dtype=torch.float32, device=device).unsqueeze(0)
+    with torch.no_grad():
+        out = anny_model(pose_parameters=rotation_to_homogeneous(R),
+                         phenotype_kwargs={k: shp[:, j] for j, k in enumerate(labels)})
+    v = out['vertices'][0].cpu().numpy().astype(np.float64) + r['transl'] + trans_smpl   # world
+    v_cam = v @ P[:3, :3].T + P[:3, 3]
+    z = v_cam[:, 2]
+    front = z > 1e-3
+    if front.sum() < 10:
+        return np.zeros(4, dtype=np.int32), 0.0
+    uv = (v_cam[front] / z[front, None]) @ K.T
+    u, vv = uv[:, 0], uv[:, 1]
+    inside = (u >= 0) & (u < img_w) & (vv >= 0) & (vv < img_h)
+    frac = float(inside.sum()) / float(len(v))
+    box = np.array([np.floor(u.min()), np.floor(vv.min()), np.ceil(u.max()), np.ceil(vv.max())])
+    box[0::2] = np.clip(box[0::2], 0, max(img_w - 1, 0))
+    box[1::2] = np.clip(box[1::2], 0, max(img_h - 1, 0))
+    return box.astype(np.int32), frac
+
+
 # ---------------------------------------------------------------------------
 # 3DPW helpers
 # ---------------------------------------------------------------------------
@@ -782,6 +826,11 @@ def main():
     ap.add_argument('--free_phenotypes', type=str, default=DEFAULT_FREE_PHENOTYPES,
                     help="comma list of phenotypes the optimiser may move, or 'all' "
                          "(v1 behaviour). Gender is added automatically if it is not fixed.")
+    ap.add_argument('--set_phenotypes', type=str, default=DEFAULT_SET_PHENOTYPES,
+                    help="comma list name=value: the value a fixed phenotype keeps, or the "
+                         "start value of a free one (default 0.5 for all others). '' = none")
+    ap.add_argument('--quiet', type=int, default=0, choices=[0, 1],
+                    help='1: no per-stage output, one line per frame')
     ap.add_argument('--device', type=str, default='cuda')
     ap.add_argument('--shared_shape', type=int, default=1, choices=[0, 1],
                     help='1 (default): two-pass fit. Pass 1 fits shape freely on a few '
@@ -938,6 +987,13 @@ def main():
 
     # ---- shape setup --------------------------------------------------------
     shape_init = np.full(len(pheno_labels), 0.5, dtype=np.float32)
+    for item in [x.strip() for x in args.set_phenotypes.split(',') if x.strip()]:
+        if '=' not in item:
+            print(f"ERROR: --set_phenotypes entries look like name=value, got {item!r}"); sys.exit(1)
+        k2, v2 = item.split('=', 1)
+        if k2.strip() not in pheno_labels:
+            print(f"ERROR: unknown phenotype {k2.strip()!r} in --set_phenotypes; choose from {pheno_labels}"); sys.exit(1)
+        shape_init[pheno_labels.index(k2.strip())] = float(v2)
     if args.free_phenotypes.strip().lower() == 'all':
         free_names = set(pheno_labels)
     else:
@@ -960,7 +1016,7 @@ def main():
             free_names.add('gender')
     free_mask = np.array([n in free_names for n in pheno_labels], dtype=bool)
     print(f"  free phenotypes: {[n for n in pheno_labels if n in free_names]}; "
-          f"fixed: {[n for n in pheno_labels if n not in free_names]}")
+          f"fixed: {[(n, round(float(shape_init[i]), 2)) for i, n in enumerate(pheno_labels) if n not in free_names]}")
     print(f"  pose regulariser {args.pose_reg}, shape regulariser {args.shape_reg}, "
           f"free bones: {args.free_bones}, virtual joints: {sorted(SMPL_JOINT_NAMES[i] for i in offsets)}")
     fit_kw = dict(lr=args.lr, pose_reg=args.pose_reg, shape_reg=args.shape_reg,
@@ -978,7 +1034,7 @@ def main():
             continue
         it = tuple(args.warm_iters) if prev is not None else tuple(args.iters)
         r = fit_frame(anny_model, j_t, anny_idx, smpl_idx, device, iters=it,
-                      verbose=(k == 0), shape_init=shape_init, free_shape=free_mask,
+                      verbose=(k == 0 and not args.quiet), shape_init=shape_init, free_shape=free_mask,
                       init=prev, **fit_kw)
         # Never let a NaN fit into the output file: a saved .npz full of NaN
         # looks like valid training data until it silently poisons a run.
@@ -1019,7 +1075,8 @@ def main():
                 print(f"  [frame {r['frame']}] pass 2 produced NaN - keeping the pass-1 result "
                       f"(its own shape, not the shared one)")
                 continue
-            print(f"  [frame {r['frame']}] {r['joint_err_mm']:.1f} -> {r2['joint_err_mm']:.1f} mm")
+            if not args.quiet or i % 50 == 0:
+                print(f"  [frame {r['frame']}] {r['joint_err_mm']:.1f} -> {r2['joint_err_mm']:.1f} mm")
             r2['frame'] = r['frame']
             results[i] = r2
 
@@ -1047,6 +1104,22 @@ def main():
         print(f"  {SMPL_JOINT_NAMES[i]:<16} -> {bone_of.get(i, '?'):<16} {mean_pj[i]:6.1f} mm")
 
     fr = np.array([r['frame'] for r in results])
+
+    # ---- per-frame bounding box of the posed MESH in the image --------------
+    cam_K_np = np.asarray(seq['cam_intrinsics'], dtype=np.float64) if 'cam_intrinsics' in seq else None
+    img_w = int(round(2 * cam_K_np[0, 2])) if cam_K_np is not None else 0
+    img_h = int(round(2 * cam_K_np[1, 2])) if cam_K_np is not None else 0
+    bboxes = np.zeros((len(results), 4), dtype=np.int32)
+    visible = np.zeros(len(results), dtype=np.float32)
+    if cam_K_np is not None and 'cam_poses' in seq:
+        print(f"\ncomputing mesh bounding boxes ({img_w}x{img_h} image)...")
+        for i, r in enumerate(results):
+            P = np.asarray(seq['cam_poses'][r['frame']], dtype=np.float64)
+            bboxes[i], visible[i] = mesh_bbox(anny_model, r, trans_all[r['frame']], P, cam_K_np,
+                                              img_w, img_h, device)
+        print(f"  visible fraction: mean {visible.mean():.2f}, min {visible.min():.2f} "
+              f"({int((visible < 0.5).sum())} frames below 0.5)")
+
     # Everything render_anny_fit.py needs to put the mesh back on the photo:
     #   world = anny_verts + trans_smpl[t]   (we fit with SMPL transl=0)
     #   cam   = cam_poses[t] @ world ;  pixels = cam_intrinsics @ cam
@@ -1082,7 +1155,9 @@ def main():
              smpl_idx=np.array(smpl_idx), anny_idx=np.array(anny_idx),
              offset_joints=np.array(sorted(SMPL_JOINT_NAMES[i] for i in offsets)),
              joint_offsets_local=np.stack([offsets.get(i, np.zeros(3, np.float32)) for i in smpl_idx]),
-             free_bones=args.free_bones, version='2.1',
+             free_bones=args.free_bones, version='2.2',
+             tight_bbox=bboxes, visible_frac=visible, img_size=np.array([img_w, img_h]),
+             pkl_path=os.path.abspath(args.pkl),
              anny_bone_names=np.array([bone_of[i] for i in smpl_idx]))
     print(f"saved -> {args.out}")
 
